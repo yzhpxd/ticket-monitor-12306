@@ -1,5 +1,5 @@
 // main.go
-// 12306 余票监控桌面客户端（稳定好用版）
+// 12306 余票监控桌面客户端（直达乘车人页面协同版）
 package main
 
 import (
@@ -232,7 +232,6 @@ func (q *querier) queryTickets(date, fromInput, toInput string) QueryResponse {
 		return QueryResponse{Success: false, Message: "未能识别出发站或到达站名称，请输入准确的中文站名（如：上海虹桥）"}
 	}
 
-	// 12306 官方原生完整参数链接（自动带上普通票、单程标记）
 	buyURL := fmt.Sprintf("https://kyfw.12306.cn/otn/leftTicket/init?linktypeid=dc&fs=%s,%s&ts=%s,%s&date=%s&flag=N,N,Y",
 		url.QueryEscape(fromName), fromCode, url.QueryEscape(toName), toCode, date)
 
@@ -525,7 +524,7 @@ const htmlPage = `<!DOCTYPE html>
     <div class="logo-circle">铁</div>
     <div>
       <div class="brand-title">中国铁路12306 · 余票雷达</div>
-      <div class="brand-sub">12306 TICKET MONITOR DESKTOP</div>
+      <div class="brand-sub">12306 TICKET MONITOR DESKTOP (油猴全自动直达版)</div>
     </div>
   </div>
   <div class="header-right">
@@ -538,7 +537,7 @@ const htmlPage = `<!DOCTYPE html>
   <span>首页</span>
   <span class="active">车票余票监控</span>
   <span>实时票价解析</span>
-  <span>一键直达官方订票</span>
+  <span>一键直达乘车人页面</span>
 </div>
 
 <div class="container">
@@ -605,7 +604,7 @@ const htmlPage = `<!DOCTYPE html>
 
   <div class="hit-banner" id="hitBanner">
     <span id="hitText">🎉 发现可用余票！</span>
-    <button class="btn btn-buy" id="fastBookBtn" onclick="openOfficialBuy()">立即前往 12306 官网订票 ➔</button>
+    <button class="btn btn-buy" id="fastBookBtn" onclick="openOfficialBuy(window.firstHitTrain || '')">立即直达预订首趟有票车次 ➔</button>
   </div>
 
   <div class="table-wrap">
@@ -633,7 +632,7 @@ const htmlPage = `<!DOCTYPE html>
   </div>
 
   <div class="footer-bar">
-    <span id="logText">提示：有票时会响铃，点击任意车次右侧的【预订】会直接唤起 12306 官网该车次购票页！</span>
+    <span id="logText">提示：有票时自动响铃，点击任意车次右侧的【预订】即可自动跳转进入乘车人确认页！</span>
     <span id="lastTimeText">最后更新：--:--:--</span>
   </div>
 </div>
@@ -646,6 +645,7 @@ const htmlPage = `<!DOCTYPE html>
   let monitorTimer = null;
   let countdownTimer = null;
   let remainSec = 0;
+  window.firstHitTrain = '';
 
   setInterval(() => { fetch('/api/ping').catch(() => {}); }, 2500);
 
@@ -725,6 +725,7 @@ const htmlPage = `<!DOCTYPE html>
 
     let html = '';
     let hitTrains = [];
+    window.firstHitTrain = '';
 
     for (const tr of lastData.trains) {
       const firstChar = tr.trainCode.charAt(0);
@@ -738,6 +739,7 @@ const htmlPage = `<!DOCTYPE html>
       const seatVal = tr.seats[watchSeat];
       const hit = isTicketAvailable(seatVal);
       if (hit) {
+        if (!window.firstHitTrain) window.firstHitTrain = tr.trainCode;
         hitTrains.push(tr.trainCode + '(' + seatVal + ')');
       }
 
@@ -753,7 +755,7 @@ const htmlPage = `<!DOCTYPE html>
       html += '<td>' + formatCell(tr.seats.yw, tr.prices.yw, showPrice) + '</td>';
       html += '<td>' + formatCell(tr.seats.yz, tr.prices.yz, showPrice) + '</td>';
       html += '<td>' + formatCell(tr.seats.wz, tr.prices.wz, showPrice) + '</td>';
-      html += '<td>' + (tr.canBuy ? '<a class="book-link" onclick="openOfficialBuy()">预订</a>' : '<span class="book-disabled">候补/无</span>') + '</td>';
+      html += '<td>' + (tr.canBuy ? '<a class="book-link" onclick="openOfficialBuy(\'' + tr.trainCode + '\')">预订</a>' : '<span class="book-disabled">候补/无</span>') + '</td>';
       html += '</tr>';
     }
 
@@ -763,7 +765,8 @@ const htmlPage = `<!DOCTYPE html>
     if (hitTrains.length > 0) {
       banner.style.display = 'flex';
       document.getElementById('hitText').innerText = '🎉 发现目标席别有余票：' + hitTrains.slice(0, 8).join('、') + (hitTrains.length > 8 ? ' 等' : '');
-      document.getElementById('logText').innerText = '✅ 已发现可用余票，点击右侧【预订】即可直达 12306 官网对应车次！';
+      document.getElementById('fastBookBtn').innerText = '立即直达预订 【' + window.firstHitTrain + '】 ➔';
+      document.getElementById('logText').innerText = '✅ 已发现可用余票，点击右侧【预订】即可自动跳转进入乘车人确认页！';
       playAlertBeep();
     } else {
       banner.style.display = 'none';
@@ -806,9 +809,13 @@ const htmlPage = `<!DOCTYPE html>
     }, sec * 1000);
   }
 
-  function openOfficialBuy() {
+  function openOfficialBuy(trainCode) {
     if (lastData && lastData.buyUrl) {
-      fetch('/api/open?url=' + encodeURIComponent(lastData.buyUrl));
+      let targetUrl = lastData.buyUrl;
+      if (trainCode) {
+        targetUrl += '#auto_book=' + encodeURIComponent(trainCode);
+      }
+      fetch('/api/open?url=' + encodeURIComponent(targetUrl));
     } else {
       const date = document.getElementById('trainDate').value;
       fetch('/api/open?url=' + encodeURIComponent('https://kyfw.12306.cn/otn/leftTicket/init?linktypeid=dc&date=' + date));
