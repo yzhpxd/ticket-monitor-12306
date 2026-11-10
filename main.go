@@ -1,5 +1,5 @@
 // ticket-monitor.go
-// 12306 余票监控提醒（全中文交互 + 全国中文站名自动识别 + 防闪退版）
+// 12306 余票监控提醒（全中文交互 + 自动带参打开12306官网 + 防闪退版）
 package main
 
 import (
@@ -7,8 +7,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -38,7 +40,6 @@ var nameToCode = map[string]string{
 
 var codeToName = map[string]string{}
 
-// 席别菜单与对应 12306 数组下标
 type seatOption struct {
 	Name  string
 	Index int
@@ -120,7 +121,6 @@ func (q *querier) curlGet(rawURL, referer, extraCookie string) ([]byte, error) {
 	return out, nil
 }
 
-// loadStations 从 12306 加载全国车站字典（格式：@bjb|北京北|VAP|beijingbei|bjb|0...）
 func (q *querier) loadStations() {
 	for name, code := range nameToCode {
 		codeToName[code] = name
@@ -143,6 +143,19 @@ func (q *querier) loadStations() {
 	}
 }
 
+// openBrowser 调用系统默认浏览器打开网址（兼容 Windows / macOS / Linux）
+func openBrowser(targetURL string) error {
+	switch runtime.GOOS {
+	case "windows":
+		// 使用 rundll32 打开 URL，避免 cmd /c start 遇到 & 符号被截断的问题
+		return exec.Command("rundll32", "url.dll,FileProtocolHandler", targetURL).Start()
+	case "darwin":
+		return exec.Command("open", targetURL).Start()
+	default:
+		return exec.Command("xdg-open", targetURL).Start()
+	}
+}
+
 func pauseExit(reader *bufio.Reader, code int) {
 	fmt.Println("\n----------------------------------------")
 	fmt.Print("程序已停止，按【回车键 Enter】关闭窗口...")
@@ -156,28 +169,23 @@ func readLine(reader *bufio.Reader, prompt string) string {
 	return strings.TrimSpace(s)
 }
 
-// askStation 交互式询问车站，支持输入中文站名（如“上海虹桥”）或三字代码（如“AOH”）
 func askStation(reader *bufio.Reader, label, defaultStation string) (string, string) {
 	for {
 		input := readLine(reader, fmt.Sprintf("请输入%s（中文站名或代码，直接回车默认【%s】）: ", label, defaultStation))
 		if input == "" {
 			input = defaultStation
 		}
-		// 1. 直接匹配中文站名
 		if code, ok := nameToCode[input]; ok {
 			return input, code
 		}
-		// 2. 去掉末尾的“站”字再试一次（例如用户输入“北京南站”）
 		trimmed := strings.TrimSuffix(input, "站")
 		if code, ok := nameToCode[trimmed]; ok {
 			return trimmed, code
 		}
-		// 3. 输入的是三字英文代码（如 VNP）
 		upper := strings.ToUpper(input)
 		if name, ok := codeToName[upper]; ok {
 			return name, upper
 		}
-		// 4. 模糊匹配提示
 		var matches []string
 		for name, code := range nameToCode {
 			if strings.Contains(name, trimmed) {
@@ -190,7 +198,7 @@ func askStation(reader *bufio.Reader, label, defaultStation string) (string, str
 		if len(matches) > 0 {
 			fmt.Printf("  ⚠️ 未找到精确站名 %q，你是不是想找：%s\n", input, strings.Join(matches, "、"))
 		} else {
-			fmt.Printf("  ⚠️ 未识别的车站 %q，请重新输入（也可以直接输入 12306 三字大写车站代码）。\n", input)
+			fmt.Printf("  ⚠️ 未识别的车站 %q，请重新输入。\n", input)
 		}
 	}
 }
@@ -277,7 +285,6 @@ func main() {
 	q.loadStations()
 	fmt.Printf(" 完成（共 %d 个车站）\n\n", len(nameToCode))
 
-	// 1. 交互输入：日期、出发站、到达站、车次、席别、间隔
 	date := askDate(reader)
 	fromName, fromCode := askStation(reader, "出发站", "上海虹桥")
 	toName, toCode := askStation(reader, "到达站", "北京南")
@@ -297,7 +304,7 @@ func main() {
 	fmt.Printf("   区间：%s(%s) → %s(%s)\n", fromName, fromCode, toName, toCode)
 	fmt.Printf("   车次：%s | 席别：%s | 间隔：%v\n", trainTip, seatName, interval)
 	fmt.Println("==================================================")
-	fmt.Println("提示：发现有票会响铃并停留在窗口；按 Ctrl+C 可随时终止。")
+	fmt.Println("提示：发现有票会响铃并询问是否打开 12306；按 Ctrl+C 可随时终止。")
 
 	failures := 0
 	for {
@@ -321,11 +328,26 @@ func main() {
 		if len(found) > 0 {
 			fmt.Print("\a\a\a\n")
 			fmt.Println("==================================================")
-			fmt.Println("🎉 有票了！请马上打开 12306 官网或 APP 下单：")
+			fmt.Println("🎉 有票了！发现以下可用车次：")
 			for _, f := range found {
 				fmt.Println("  ", f)
 			}
 			fmt.Println("==================================================")
+
+			// 询问是否打开 12306 网站，默认直接回车打开
+			choice := strings.ToLower(readLine(reader, "\n是否立即打开 12306 购票页面？[Y/n]（直接按回车打开）: "))
+			if choice == "" || choice == "y" || choice == "yes" || choice == "是" {
+				// 拼接带出发站、到达站、日期参数的 12306 购票直达链接
+				fsParam := url.QueryEscape(fromName + "," + fromCode)
+				tsParam := url.QueryEscape(toName + "," + toCode)
+				buyURL := fmt.Sprintf("https://kyfw.12306.cn/otn/leftTicket/init?linktypeid=dc&fs=%s&ts=%s&date=%s&flag=N,N,Y",
+					fsParam, tsParam, date)
+
+				fmt.Println("正在打开浏览器跳转 12306 购票页面...")
+				if err := openBrowser(buyURL); err != nil {
+					fmt.Printf("⚠️ 自动打开浏览器失败（%v），请手动复制以下网址打开：\n%s\n", err, buyURL)
+				}
+			}
 			pauseExit(reader, 0)
 		}
 		fmt.Printf("[%s] 暂无余票，%v 后继续查询…\n", time.Now().Format("15:04:05"), interval)
@@ -450,10 +472,6 @@ func doQuery(q *querier, base, date, from, to string) (*leftTicketResp, error) {
 
 	var out leftTicketResp
 	if err := json.Unmarshal(b, &out); err != nil {
-		preview := strings.TrimSpace(string(b))
-		if len(preview) > 200 {
-			preview = preview[:200]
-		}
 		return nil, fmt.Errorf("非 JSON 响应（%d 字节）", len(b))
 	}
 	return &out, nil
