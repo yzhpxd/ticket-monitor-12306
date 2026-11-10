@@ -1,0 +1,63 @@
+// ==UserScript==
+// @name         12306 余票雷达 - 自动直达乘车人页面
+// @namespace    http://tampermonkey.net/
+// @version      3.0
+// @description  监控软件打开页面后，自动点查询并触发预订，直达 confirmPassenger 乘车人确认页
+// @match        https://kyfw.12306.cn/otn/leftTicket/init*
+// @run-at       document-end
+// @grant        none
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    // 读取 URL 末尾附带的 #auto_book=车次
+    const hash = window.location.hash;
+    if (!hash || !hash.startsWith('#auto_book=')) return;
+
+    const targetTrain = decodeURIComponent(hash.replace('#auto_book=', '')).trim().toUpperCase();
+    if (!targetTrain) return;
+
+    let attempts = 0;
+    let queryClicked = false;
+
+    const timer = setInterval(() => {
+        attempts++;
+        if (attempts > 120) {
+            clearInterval(timer);
+            return;
+        }
+
+        // 1. 若表格尚未出数据，自动点击橙色的【查询】按钮
+        const rows = document.querySelectorAll('#queryLeftTable tr');
+        if (rows.length === 0 && !queryClicked && attempts > 3) {
+            const qBtn = document.getElementById('query_ticket');
+            if (qBtn) {
+                queryClicked = true;
+                qBtn.click();
+            }
+            return;
+        }
+
+        // 2. 表格加载完成后，定位车次并执行你刚才成功验证的代码
+        const trainLinks = document.querySelectorAll('#queryLeftTable a.number');
+        for (const a of trainLinks) {
+            if (a.innerText.trim().toUpperCase() === targetTrain) {
+                const tr = a.closest('tr');
+                if (!tr) continue;
+
+                const btn = tr.querySelector('a.btn72');
+                if (btn) {
+                    clearInterval(timer);
+                    // 派发真实的鼠标点击事件
+                    btn.dispatchEvent(new MouseEvent('click', {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window
+                    }));
+                    return;
+                }
+            }
+        }
+    }, 100);
+})();
