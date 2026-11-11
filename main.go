@@ -1,5 +1,5 @@
 // main.go
-// 12306 余票监控桌面客户端（直达乘车人页面协同版）
+// 12306 余票监控桌面客户端（常驻稳定版）
 package main
 
 import (
@@ -406,18 +406,13 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	lastPing := time.Now()
-	var pingMu sync.Mutex
-	mux.HandleFunc("/api/ping", func(w http.ResponseWriter, r *http.Request) {
-		pingMu.Lock()
-		lastPing = time.Now()
-		pingMu.Unlock()
-		w.WriteHeader(http.StatusOK)
-	})
-
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	// 优先绑定固定端口 12306，若被占用则使用随机端口
+	ln, err := net.Listen("tcp", "127.0.0.1:12306")
 	if err != nil {
-		return
+		ln, err = net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return
+		}
 	}
 	appURL := fmt.Sprintf("http://%s", ln.Addr().String())
 
@@ -426,20 +421,7 @@ func main() {
 		openURLInBrowser(appURL)
 	}()
 
-	go func() {
-		time.Sleep(15 * time.Second)
-		for {
-			time.Sleep(3 * time.Second)
-			pingMu.Lock()
-			elapsed := time.Since(lastPing)
-			pingMu.Unlock()
-			if elapsed > 8*time.Second {
-				os.Remove(q.cookieFile)
-				os.Exit(0)
-			}
-		}
-	}()
-
+	// 移除了自动退出机制，服务器将一直常驻运行，永不失效！
 	_ = http.Serve(ln, mux)
 }
 
@@ -524,7 +506,7 @@ const htmlPage = `<!DOCTYPE html>
     <div class="logo-circle">铁</div>
     <div>
       <div class="brand-title">中国铁路12306 · 余票雷达</div>
-      <div class="brand-sub">12306 TICKET MONITOR DESKTOP (油猴全自动直达版)</div>
+      <div class="brand-sub">12306 TICKET MONITOR DESKTOP (常驻稳定版)</div>
     </div>
   </div>
   <div class="header-right">
@@ -646,8 +628,6 @@ const htmlPage = `<!DOCTYPE html>
   let countdownTimer = null;
   let remainSec = 0;
   window.firstHitTrain = '';
-
-  setInterval(() => { fetch('/api/ping').catch(() => {}); }, 2500);
 
   function swapStations() {
     const f = document.getElementById('fromStation');
